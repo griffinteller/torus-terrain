@@ -452,8 +452,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   majorRadius: 10
-  minorRadius: 8
-  vertexRows: 50
+  minorRadius: 5
+  vertexRows: 100
 --- !u!23 &1877942415
 MeshRenderer:
   m_ObjectHideFlags: 0

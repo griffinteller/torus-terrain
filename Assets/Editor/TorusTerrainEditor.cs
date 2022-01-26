@@ -1,20 +1,20 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
-using UnityEngine.Rendering;
 
 namespace Editor
 {
-    [CustomEditor(typeof(Torus))]
-    public class TorusEditor : UnityEditor.Editor
+    [CustomEditor(typeof(TorusTerrain))]
+    public class TorusTerrainEditor : UnityEditor.Editor
     {
-        private Torus _target;
-        
-        private const string SavePath = "Assets/Meshes/QuadTest.asset";
+        private TorusTerrain _terrain;
+
+        private const string SavePath = "Assets/Meshes/TestQuad.asset";
 
         public void OnEnable()
         {
-            _target = (Torus) target;
+            _terrain = (TorusTerrain) target;
         }
 
         public override void OnInspectorGUI()
@@ -22,69 +22,58 @@ namespace Editor
             DrawDefaultInspector();
 
             if (GUILayout.Button("Generate"))
-                Generate();
+                GenerateQuad(0, 0);
         }
 
-        private void Generate()
+        private void GenerateQuad(int i, int j)
         {
-            int[] cols = new int[_target.vertexRows + 1]; // wrapping means one overlapping layer
-            float rowSepRad = Mathf.PI * 2 / _target.vertexRows;
-            float rowSepLin = Mathf.Sin(rowSepRad) / Mathf.Sin((Mathf.PI - rowSepRad) / 2) * _target.minorRadius;
-            for (int i = 0; i <= _target.vertexRows; i++)
+            int[] cols = new int[_terrain.VerticalQuadVerts]; // wrapping means one overlapping layer
+            
+            float xQuadRadians = Mathf.PI * 2 / _terrain.QuadResolution.x;
+            float yQuadRadians = Mathf.PI * 2 / _terrain.QuadResolution.y;
+
+            float rowSepRad = yQuadRadians / (_terrain.VerticalQuadVerts - 1);
+            float rowSepLin = Mathf.Sin(rowSepRad) / Mathf.Sin((Mathf.PI - rowSepRad) / 2) * _terrain.MinorRadius;
+            
+            for (int row = 0; row < _terrain.VerticalQuadVerts; row++)
             {
-                float theta = i * rowSepRad;
-                float rowCircum = (_target.majorRadius + _target.minorRadius * Mathf.Cos(theta)) * 2 * Mathf.PI;
-                cols[i] = Mathf.RoundToInt(rowCircum / rowSepLin) + 1; // +1 for overlapping layer
+                float theta = yQuadRadians * j + row * rowSepRad;
+                float rowWidth = (_terrain.MinorRadius + _terrain.MinorRadius * Mathf.Cos(theta)) * xQuadRadians;
+                cols[row] = Mathf.Min(2, Mathf.RoundToInt(rowWidth / rowSepLin) + 1); // +1 for overlapping column
             }
 
             Mesh mesh = new Mesh();
-            mesh.indexFormat = IndexFormat.UInt32;
-            mesh.vertices = GenerateVertices(cols);
-            mesh.triangles = GenerateTriangles(cols);
-            mesh.uv = GenerateUvs(cols);
+            mesh.vertices = GenerateMeshVerts(i, j, cols);
+            mesh.triangles = GenerateMeshTriangles(cols);
             mesh.RecalculateNormals();
             mesh.RecalculateBounds();
             mesh.Optimize();
-            
-            AssetDatabase.CreateAsset(mesh, SavePath);
-            AssetDatabase.SaveAssets();
-            AssetDatabase.Refresh();
 
-            _target.GetComponent<MeshFilter>().sharedMesh = AssetDatabase.LoadAssetAtPath<Mesh>(SavePath);
+            _terrain.GetComponent<MeshFilter>().mesh = mesh;
         }
 
-        private Vector2[] GenerateUvs(int[] cols)
-        {
-            List<Vector2> uvs = new List<Vector2>();
-            for (int j = 0; j < cols.Length; j++)
-            {
-                float v = (float) j / cols.Length;
-                int rowVerts = cols[j];
-                for (int i = 0; i < cols.Length; i++)
-                {
-                    uvs.Add(new Vector2((float) i / rowVerts, v));
-                }
-            }
-
-            return uvs.ToArray();
-        }
-
-        private Vector3[] GenerateVertices(int[] cols)
+        private Vector3[] GenerateMeshVerts(int quadI, int quadJ, int[] cols)
         {
             List<Vector3> verts = new List<Vector3>();
-            float rowSepRad = Mathf.PI * 2 / _target.vertexRows;
-            for (int i = 0; i < cols.Length; i++)
+            
+            float xQuadRadians = Mathf.PI * 2 / _terrain.QuadResolution.x;
+            float yQuadRadians = Mathf.PI * 2 / _terrain.QuadResolution.y;
+            
+            float rowSepRad = yQuadRadians / (_terrain.VerticalQuadVerts - 1);
+            
+            for (int j = 0; j < cols.Length; j++)
             {
-                float rowAngle = i * rowSepRad;
-                float colSepRad = Mathf.PI * 2 / (cols[i] - 1);
-                for (int j = 0; j < cols[i]; j++)
+                float rowAngle = quadJ * yQuadRadians + j * rowSepRad;
+                float colSepRad = xQuadRadians / (cols[j] - 1);
+                
+                for (int i = 0; i < cols[j]; i++)
                 {
-                    float colAngle = j * colSepRad;
+                    float colAngle = quadI * xQuadRadians + i * colSepRad;
                     Vector3 vertex =
                         Quaternion.Euler(0, -Mathf.Rad2Deg * colAngle, 0)
                         * new Vector3(
-                            _target.majorRadius + _target.minorRadius * Mathf.Cos(rowAngle),
-                            _target.minorRadius * Mathf.Sin(rowAngle),
+                            _terrain.MajorRadius + _terrain.MinorRadius * Mathf.Cos(rowAngle),
+                            _terrain.MinorRadius * Mathf.Sin(rowAngle),
                             0);
                     
                     verts.Add(vertex);
@@ -94,7 +83,7 @@ namespace Editor
             return verts.ToArray();
         }
 
-        private int[] GenerateTriangles(int[] cols)
+        private int[] GenerateMeshTriangles(int[] cols)
         {
             List<int> tris = new List<int>();
 
@@ -107,8 +96,8 @@ namespace Editor
 
             return tris.ToArray();
         }
-        
-        private void TriangulateRows(List<int> tris, int[] cols, int bottomRow, int bottomRowOffset)
+
+        private static void TriangulateRows(List<int> tris, int[] cols, int bottomRow, int bottomRowOffset)
         {
             int topRow = bottomRow + 1;
 
