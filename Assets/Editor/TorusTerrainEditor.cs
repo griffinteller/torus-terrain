@@ -38,8 +38,8 @@ namespace Editor
             for (int row = 0; row < _terrain.VerticalQuadVerts; row++)
             {
                 float theta = yQuadRadians * j + row * rowSepRad;
-                float rowWidth = (_terrain.MinorRadius + _terrain.MinorRadius * Mathf.Cos(theta)) * xQuadRadians;
-                cols[row] = Mathf.Min(2, Mathf.RoundToInt(rowWidth / rowSepLin) + 1); // +1 for overlapping column
+                float rowWidth = (_terrain.MajorRadius + _terrain.MinorRadius * Mathf.Cos(theta)) * xQuadRadians;
+                cols[row] = Mathf.Max(2, Mathf.RoundToInt(rowWidth / rowSepLin) + 1); // +1 for overlapping column
             }
 
             Mesh mesh = new Mesh();
