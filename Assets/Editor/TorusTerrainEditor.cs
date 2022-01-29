@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 
+using Object = UnityEngine.Object;
+
 namespace Editor
 {
     [CustomEditor(typeof(TorusTerrain))]
@@ -10,7 +12,7 @@ namespace Editor
     {
         private TorusTerrain _terrain;
 
-        private const string SavePath = "Assets/Meshes/TestQuad.asset";
+        private const string SavePath = "Assets/TorusTerrainData.asset";
 
         public void OnEnable()
         {
@@ -22,10 +24,48 @@ namespace Editor
             DrawDefaultInspector();
 
             if (GUILayout.Button("Generate"))
-                GenerateQuad(0, 0);
+                Generate();
         }
 
-        private void GenerateQuad(int i, int j)
+        private void Generate()
+        {
+            while (_terrain.transform.childCount > 0)
+            {
+                DestroyImmediate(_terrain.transform.GetChild(0).gameObject);
+            }
+            
+            _terrain.Quads = new TorusTerrainQuad[_terrain.QuadResolution.x, _terrain.QuadResolution.y];
+            
+            TorusTerrainData data = CreateInstance<TorusTerrainData>();
+            _terrain.data = data;
+            data.Initialize(_terrain.QuadResolution.x, _terrain.QuadResolution.y);
+            AssetDatabase.CreateAsset(data, SavePath);
+
+            for (int i = 0; i < _terrain.QuadResolution.x; i++)
+            for (int j = 0; j < _terrain.QuadResolution.y; j++)
+            {
+                Mesh mesh = GenerateQuadMesh(i, j);
+                AssetDatabase.AddObjectToAsset(mesh, SavePath);
+                
+                data.SetMesh(i, j, mesh);
+
+                GameObject obj = new GameObject($"Mesh {i} {j}");
+                obj.transform.parent = _terrain.transform;
+                obj.transform.localPosition = Vector3.zero;
+
+                TorusTerrainQuad quad = obj.AddComponent<TorusTerrainQuad>();
+                _terrain.Quads[i, j] = quad;
+                
+                obj.GetComponent<MeshFilter>().mesh = mesh;
+                obj.GetComponent<MeshRenderer>().material = _terrain.Material;
+            }
+            
+            AssetDatabase.ImportAsset(SavePath);
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+        }
+
+        private Mesh GenerateQuadMesh(int i, int j)
         {
             int[] cols = new int[_terrain.VerticalQuadVerts]; // wrapping means one overlapping layer
             
@@ -49,7 +89,7 @@ namespace Editor
             mesh.RecalculateBounds();
             mesh.Optimize();
 
-            _terrain.GetComponent<MeshFilter>().mesh = mesh;
+            return mesh;
         }
 
         private Vector3[] GenerateMeshVerts(int quadI, int quadJ, int[] cols)
