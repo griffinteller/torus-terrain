@@ -58,11 +58,11 @@ namespace Editor
             List<Vector2> uvs = new List<Vector2>();
             for (int j = 0; j < cols.Length; j++)
             {
-                float v = (float) j / cols.Length;
+                float v = (float) j / (cols.Length - 1);
                 int rowVerts = cols[j];
-                for (int i = 0; i < cols.Length; i++)
+                for (int i = 0; i < cols[j]; i++)
                 {
-                    uvs.Add(new Vector2((float) i / rowVerts, v));
+                    uvs.Add(new Vector2((float) i / (rowVerts - 1), v));
                 }
             }
 
