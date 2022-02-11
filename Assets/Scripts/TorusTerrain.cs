@@ -1,4 +1,5 @@
-﻿using UnityEngine;
+﻿using System;
+using UnityEngine;
 
 public class TorusTerrain : MonoBehaviour
 {
@@ -17,6 +18,4 @@ public class TorusTerrain : MonoBehaviour
     public Vector2Int QuadResolution => quadResolution;
     public int VerticalQuadVerts => verticalQuadVerts;
     public Material Material => material;
-
-
 }
