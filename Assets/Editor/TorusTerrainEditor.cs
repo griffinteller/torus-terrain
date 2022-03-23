@@ -1,9 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
-
-using Object = UnityEngine.Object;
 
 namespace Editor
 {
@@ -25,6 +22,9 @@ namespace Editor
 
             if (GUILayout.Button("Generate"))
                 Generate();
+            
+            if (GUILayout.Button("Apply Heightmap"))
+                ApplyHeightmap();
         }
 
         private void Generate()
@@ -49,7 +49,7 @@ namespace Editor
                 
                 data.SetMesh(i, j, mesh);
 
-                GameObject obj = new GameObject($"Mesh {i} {j}");
+                GameObject obj = new ($"Mesh {i} {j}");
                 obj.transform.parent = _terrain.transform;
                 obj.transform.localPosition = Vector3.zero;
 
@@ -67,24 +67,14 @@ namespace Editor
 
         private Mesh GenerateQuadMesh(int i, int j)
         {
-            int[] cols = new int[_terrain.VerticalQuadVerts]; // wrapping means one overlapping layer
-            
-            float xQuadRadians = Mathf.PI * 2 / _terrain.QuadResolution.x;
-            float yQuadRadians = Mathf.PI * 2 / _terrain.QuadResolution.y;
-
-            float rowSepRad = yQuadRadians / (_terrain.VerticalQuadVerts - 1);
-            float rowSepLin = Mathf.Sin(rowSepRad) / Mathf.Sin((Mathf.PI - rowSepRad) / 2) * _terrain.MinorRadius;
-            
-            for (int row = 0; row < _terrain.VerticalQuadVerts; row++)
-            {
-                float theta = yQuadRadians * j + row * rowSepRad;
-                float rowWidth = (_terrain.MajorRadius + _terrain.MinorRadius * Mathf.Cos(theta)) * xQuadRadians;
-                cols[row] = Mathf.Max(2, Mathf.RoundToInt(rowWidth / rowSepLin) + 1); // +1 for overlapping column
-            }
+            int[] cols = TorusUtility.GenerateQuadVertexDimensions(
+                _terrain.QuadResolution, new Vector2Int(i, j), 
+                _terrain.Parameter, _terrain.VerticalQuadVerts);
 
             Mesh mesh = new Mesh();
             mesh.vertices = GenerateMeshVerts(i, j, cols);
-            mesh.triangles = GenerateMeshTriangles(cols);
+            mesh.triangles = TorusUtility.GenerateMeshTriangles(cols);
+            mesh.uv = TorusUtility.GenerateQuadUvs(_terrain.QuadResolution, new Vector2Int(i, j), cols);
             mesh.RecalculateNormals();
             mesh.RecalculateBounds();
             mesh.Optimize();
@@ -94,7 +84,7 @@ namespace Editor
 
         private Vector3[] GenerateMeshVerts(int quadI, int quadJ, int[] cols)
         {
-            List<Vector3> verts = new List<Vector3>();
+            List<Vector3> verts = new ();
             
             float xQuadRadians = Mathf.PI * 2 / _terrain.QuadResolution.x;
             float yQuadRadians = Mathf.PI * 2 / _terrain.QuadResolution.y;
@@ -123,85 +113,42 @@ namespace Editor
             return verts.ToArray();
         }
 
-        private int[] GenerateMeshTriangles(int[] cols)
+        private void ApplyHeightmap()
         {
-            List<int> tris = new List<int>();
-
-            int bottomRowOffset = 0;
-            for (int i = 0; i < cols.Length - 1; i++)
+            for (int i = 0; i < _terrain.QuadResolution.x; i++)
+            for (int j = 0; j < _terrain.QuadResolution.y; j++)
             {
-                TriangulateRows(tris, cols, i, bottomRowOffset);
-                bottomRowOffset += cols[i];
+                
+                Mesh mesh = _terrain.data.GetMesh(i, j);
+                Vector3[] verts = mesh.vertices;
+                Vector2[] uvs = mesh.uv;
+
+                for (int vert = 0; vert < verts.Length; vert++)
+                {
+                    (float u, float v) = (uvs[vert].x, uvs[vert].y);
+
+                    float theta = u * Mathf.PI * 2; // horizontal angle
+                    float phi = v * Mathf.PI * 2;
+                    Vector3 normal = (Quaternion.Euler(0, -theta * Mathf.Rad2Deg, 0)
+                                     * new Vector3(Mathf.Cos(phi), Mathf.Sin(phi), 0)).normalized;
+
+                    float normHeight = _terrain.Heightmap.GetPixelBilinear(u, v).r;
+                    float radius = _terrain.MinorRadius + normHeight * _terrain.Scale + _terrain.Offset;
+
+                    Vector3 ringPosition = _terrain.MajorRadius
+                                           * new Vector3(Mathf.Cos(theta), 0, Mathf.Sin(theta));
+
+                    Vector3 vertPosition = ringPosition + radius * normal;
+                    verts[vert] = vertPosition;
+                }
+
+                mesh.vertices = verts;
+                mesh.RecalculateNormals();
+                mesh.RecalculateBounds();
             }
-
-            return tris.ToArray();
-        }
-
-        private static void TriangulateRows(List<int> tris, int[] cols, int bottomRow, int bottomRowOffset)
-        {
-            int topRow = bottomRow + 1;
-
-            int row0, row1, row0Offset, row1Offset;  // 0 has fewer columns
-            bool flip = false;
-            if (cols[bottomRow] <= cols[topRow])
-            {
-                row0 = bottomRow;
-                row1 = topRow;
-                row0Offset = bottomRowOffset;
-                row1Offset = bottomRowOffset + cols[bottomRow];
-            }
-            else
-            {
-                row0 = topRow;
-                row1 = bottomRow;
-                row0Offset = bottomRowOffset + cols[bottomRow];
-                row1Offset = bottomRowOffset;
-                flip = true;
-            }
-
-            int lastRow1Index = 0;
-            for (int i = 0; i < cols[row0]; i++)
-            {
-                // add as many triangles as necessary
-                int newRow1Index = ((cols[row1]  - 1) * i) / (cols[row0] - 1) + 1;
-                if (newRow1Index > cols[row1] - 1)
-                    newRow1Index = cols[row1] - 1;
             
-                for (int j = lastRow1Index; j < newRow1Index; j++)
-                {
-                    tris.Add(row0Offset + i);
-
-                    if (!flip)
-                    {
-                        tris.Add(row1Offset + j);
-                        tris.Add(row1Offset + j + 1);
-                    }
-                    else
-                    {
-                        tris.Add(row1Offset + j + 1);
-                        tris.Add(row1Offset + j);
-                    }
-                }
-
-                // don't add bottom triangle on last vertex
-                if (i < cols[row0] - 1)
-                {
-                    tris.Add(row0Offset + i);
-
-                    if (!flip)
-                    {
-                        tris.Add(row1Offset + newRow1Index);
-                        tris.Add(row0Offset + i + 1);
-                    }
-                    else
-                    {
-                        tris.Add(row0Offset + i + 1);
-                        tris.Add(row1Offset + newRow1Index);
-                    }
-                }
-
-                lastRow1Index = newRow1Index;
-            }
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
         }
     }
 }
