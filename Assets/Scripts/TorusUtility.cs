@@ -40,7 +40,7 @@ public static class TorusUtility
         {
             float theta = yQuadRadians * quad.y + row * rowSepRad;
             float rowWidth = (parameter + Mathf.Cos(theta)) * xQuadRadians;
-            cols[row] = Mathf.Max(2, Mathf.RoundToInt(rowWidth / rowSepLin) + 1); // +1 for overlapping column
+            cols[row] = Mathf.Max(2, Mathf.FloorToInt(rowWidth / rowSepLin) + 1); // +1 for overlapping column
         }
 
         return cols;

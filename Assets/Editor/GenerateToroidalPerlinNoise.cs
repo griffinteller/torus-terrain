@@ -14,7 +14,8 @@ namespace Editor
         public float parameter = 2;
 
         public Vector2Int textureSize = new Vector2Int(500, 500);
-        public int noiseRows = 8;
+        public int startLevel = 2;
+        public int depth = 4;
         public string path = "Assets/tex.asset";
         public bool seamless = true;
         
@@ -26,63 +27,6 @@ namespace Editor
 
         public void OnWizardCreate()
         {
-            Random.InitState(0);
-            int[] cols = TorusUtility.GenerateQuadVertexDimensions(
-                Vector2Int.one, Vector2Int.zero, parameter, noiseRows);
-            Vector2[] uvs = TorusUtility.GenerateQuadUvs(
-                Vector2Int.one, Vector2Int.zero, cols);
-            Vector3[] grads = GenerateGradients(cols);
-
-            float rowSepRad = Mathf.PI * 2 / (noiseRows - 1);
-            float rowSepLin = Mathf.Sin(rowSepRad) / Mathf.Sin((Mathf.PI - rowSepRad) / 2);
-
-            Texture2D tex = GenerateTexture(uvs, grads, rowSepLin);
-            
-            AssetDatabase.CreateAsset(tex, path);
-            AssetDatabase.SaveAssets();
-            AssetDatabase.Refresh();
-        }
-
-        private Vector3[] GenerateGradients(int[] cols)
-        {
-            List<Vector3> grads = new();
-
-            for (int i = 0; i < cols.Length; i++)
-            for (int j = 0; j < cols[i]; j++)
-            {
-                float theta = (float)j / (cols[i] - 1) * (Mathf.PI * 2);
-                float phi = (float)i / (cols.Length - 1) * (Mathf.PI * 2);
-                Vector3 normal = new(
-                    Mathf.Cos(phi) * Mathf.Cos(theta), 
-                    Mathf.Sin(phi), 
-                    Mathf.Cos(phi) * Mathf.Sin(theta));
-                Vector3 tangent = new(-Mathf.Sin(theta), 0, Mathf.Cos(theta));
-                Vector3 gradient = Quaternion.AngleAxis(Random.value * 360, normal) * tangent;
-                grads.Add(gradient);
-            }
-
-            if (seamless)
-            {
-                int total = 0;
-                int j = 0;
-                for (; j < cols.Length - 1; j++)
-                {
-                    grads[total + cols[j] - 1] = grads[total];
-                    total += cols[j];
-                }
-
-                for (int i = 0; i < cols[0]; i++)
-                {
-                    grads[total + i] = grads[i];
-                }
-            }
-
-            return grads.ToArray();
-        }
-        private Texture2D GenerateTexture(Vector2[] uvs, Vector3[] grads, float sphereRadius)
-        {
-            // triangles are numbered clockwise
-
             Texture2D tex = new(textureSize.x, textureSize.y, TextureFormat.RGBAFloat, false);
             tex.wrapMode = TextureWrapMode.Repeat;
             
@@ -91,7 +35,30 @@ namespace Editor
             {
                 tex.SetPixel(i, j, new Color(0, 0, 0, 0));
             }
+
+            for (int level = startLevel; level < startLevel + depth; level++)
+            {
+                FillTexture(tex, level);
+            }
             
+            AssetDatabase.CreateAsset(tex, path);
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+        }
+
+        private void FillTexture(Texture2D tex, int level)
+        {
+            int noiseRows = Mathf.RoundToInt(Mathf.Pow(2, level));
+            
+            int[] cols = TorusUtility.GenerateQuadVertexDimensions(
+                Vector2Int.one, Vector2Int.zero, parameter, noiseRows);
+            Vector2[] uvs = TorusUtility.GenerateQuadUvs(
+                Vector2Int.one, Vector2Int.zero, cols);
+            Vector3[] grads = GenerateGradients(cols);
+
+            float rowSepRad = Mathf.PI * 2 / (noiseRows - 1);
+            float sphereRadius = Mathf.Sin(rowSepRad) / Mathf.Sin((Mathf.PI - rowSepRad) / 2);
+
             float verticalRadiusAngle = Mathf.Acos(1 - sphereRadius * sphereRadius / 2);
             float radiusV = verticalRadiusAngle / (Mathf.PI * 2);
 
@@ -154,8 +121,43 @@ namespace Editor
                     }
                 }
             }
+        }
 
-            return tex;
+        private Vector3[] GenerateGradients(int[] cols)
+        {
+            List<Vector3> grads = new();
+
+            for (int i = 0; i < cols.Length; i++)
+            for (int j = 0; j < cols[i]; j++)
+            {
+                float theta = (float)j / (cols[i] - 1) * (Mathf.PI * 2);
+                float phi = (float)i / (cols.Length - 1) * (Mathf.PI * 2);
+                Vector3 normal = new(
+                    Mathf.Cos(phi) * Mathf.Cos(theta), 
+                    Mathf.Sin(phi), 
+                    Mathf.Cos(phi) * Mathf.Sin(theta));
+                Vector3 tangent = new(-Mathf.Sin(theta), 0, Mathf.Cos(theta));
+                Vector3 gradient = Quaternion.AngleAxis(Random.value * 360, normal) * tangent;
+                grads.Add(gradient);
+            }
+
+            if (seamless)
+            {
+                int total = 0;
+                int j = 0;
+                for (; j < cols.Length - 1; j++)
+                {
+                    grads[total + cols[j] - 1] = grads[total];
+                    total += cols[j];
+                }
+
+                for (int i = 0; i < cols[0]; i++)
+                {
+                    grads[total + i] = grads[i];
+                }
+            }
+
+            return grads.ToArray();
         }
     }
 }
