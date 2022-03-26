@@ -4,6 +4,7 @@ using UnityEditor;
 using UnityEngine;
 using Random = UnityEngine.Random;
 using Unity.Mathematics;
+using UnityEngine.Experimental.Rendering;
 
 namespace Editor
 {
@@ -13,11 +14,15 @@ namespace Editor
         [Min(1)]
         public float parameter = 2;
 
-        public Vector2Int textureSize = new Vector2Int(500, 500);
-        public int startLevel = 2;
-        public int depth = 4;
+        public Vector2Int textureSize = new(480, 480);
+        public int noiseRows = 5;
         public string path = "Assets/tex.asset";
         public bool seamless = true;
+
+        private ComputeShader shader;
+        
+        private static readonly (int, int) ThreadGroupSize = (16, 16);
+        private const string KernelName = "TorusNoise";
         
         [MenuItem("Assets/Generate Toroidal Perlin Noise")]
         public static void CreateWizard()
@@ -25,102 +30,82 @@ namespace Editor
             DisplayWizard<GenerateToroidalPerlinNoise>("Toroidal Perlin Noise", "Create");
         }
 
-        public void OnWizardCreate()
+        public void OnEnable()
         {
-            Texture2D tex = new(textureSize.x, textureSize.y, TextureFormat.RGBAFloat, false);
-            tex.wrapMode = TextureWrapMode.Repeat;
-            
-            for (int i = 0; i < textureSize.x; i++)
-            for (int j = 0; j < textureSize.y; j++)
-            {
-                tex.SetPixel(i, j, new Color(0, 0, 0, 0));
-            }
-
-            for (int level = startLevel; level < startLevel + depth; level++)
-            {
-                FillTexture(tex, level);
-            }
-            
-            AssetDatabase.CreateAsset(tex, path);
-            AssetDatabase.SaveAssets();
-            AssetDatabase.Refresh();
+            shader = Resources.Load<ComputeShader>("TorusNoise");
         }
 
-        private void FillTexture(Texture2D tex, int level)
+        public void OnWizardCreate()
         {
-            int noiseRows = Mathf.RoundToInt(Mathf.Pow(2, level));
+            int kernel = shader.FindKernel(KernelName);
             
-            int[] cols = TorusUtility.GenerateQuadVertexDimensions(
-                Vector2Int.one, Vector2Int.zero, parameter, noiseRows);
-            Vector2[] uvs = TorusUtility.GenerateQuadUvs(
-                Vector2Int.one, Vector2Int.zero, cols);
-            Vector3[] grads = GenerateGradients(cols);
+            RenderTexture renderTex = new(
+                textureSize.x, textureSize.y,
+                GraphicsFormat.R32_SFloat, GraphicsFormat.None);
+            renderTex.enableRandomWrite = true;
+            renderTex.Create();
+            shader.SetTexture(kernel, "noiseTexture", renderTex);
+
+            int[] cols =
+                TorusUtility.GenerateQuadVertexDimensions(
+                    Vector2Int.one, Vector2Int.zero, 
+                    parameter, noiseRows);
+            int[] gradientStructure = GenerateGradientStructure(cols);
+            ComputeBuffer gradientStructureBuffer = new(gradientStructure.Length, sizeof(int) * 2);
+            gradientStructureBuffer.SetData(gradientStructure);
+            shader.SetBuffer(kernel, "gradientStructure", gradientStructureBuffer);
+
+            Vector3[] gradients = GenerateGradients(cols);
+            ComputeBuffer gradientBuffer = new(gradients.Length, sizeof(float) * 3);
+            gradientBuffer.SetData(gradients);
+            shader.SetBuffer(kernel, "gradients", gradientBuffer);
+
+            float uvRowSeparation = 1f / (cols.Length - 1);
+            shader.SetFloat("uvRowSeparation", uvRowSeparation);
 
             float rowSepRad = Mathf.PI * 2 / (noiseRows - 1);
             float sphereRadius = Mathf.Sin(rowSepRad) / Mathf.Sin((Mathf.PI - rowSepRad) / 2);
-
-            float verticalRadiusAngle = Mathf.Acos(1 - sphereRadius * sphereRadius / 2);
-            float radiusV = verticalRadiusAngle / (Mathf.PI * 2);
-
-            for (int vert = 0; vert < uvs.Length; vert++)
-            {
-                Vector3 vertPos = TorusUtility.UVToCoord(uvs[vert], parameter, parameter);
-                
-                float bottomV = uvs[vert].y - radiusV;
-                float topV = uvs[vert].y + radiusV;
+            shader.SetFloat("sphereRadius", sphereRadius);
             
-                int bottomPix = Mathf.Max(0, Mathf.FloorToInt(bottomV * textureSize.y));
-                int topPix = Mathf.Min(Mathf.CeilToInt(topV * textureSize.y), textureSize.y - 1);
+            shader.SetFloat("torusParameter", parameter);
+            shader.SetInt("gradRows", noiseRows);
+            shader.SetInts("texDims", textureSize.x, textureSize.y);
+            
+            shader.Dispatch(
+                kernel, 
+                textureSize.x / ThreadGroupSize.Item1, 
+                textureSize.y / ThreadGroupSize.Item2,
+                1);
+            
+            Texture2D tex = new(textureSize.x, textureSize.y, TextureFormat.RFloat, false);
+            tex.wrapMode = TextureWrapMode.Repeat;
 
-                int middlePix = Mathf.RoundToInt(Mathf.Clamp(uvs[vert].x, 0, 1) * textureSize.x);
+            RenderTexture.active = renderTex;
+            tex.ReadPixels(new Rect(0, 0, textureSize.x, textureSize.y), 0, 0);
+            RenderTexture.active = null;
                 
-                for (int j = bottomPix; j <= topPix; j++)
-                {
-                    int i = middlePix - 1;
-                    
-                    // go to the left until we are out of range
-                    while (i >= 0)
-                    {
-                        Vector3 pixelPos = TorusUtility.UVToCoord(
-                            new Vector2(i, j) / textureSize,
-                            parameter, parameter);
+            AssetDatabase.CreateAsset(tex, path);
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
 
-                        float distance = Vector3.Distance(vertPos, pixelPos);
-                        if (distance >= sphereRadius)
-                            break;
+            renderTex.Release();
+            gradientStructureBuffer.Dispose();
+            gradientBuffer.Dispose();
+        }
 
-                        float dot = Vector3.Dot(grads[vert], pixelPos - vertPos);
-                        float heightToAdd = Mathf.SmoothStep(dot, 0, distance / sphereRadius);
+        private int[] GenerateGradientStructure(int[] cols)
+        {
+            int[] structure = new int[cols.Length * 2];
 
-                        float currentHeight = tex.GetPixel(i, j).r;
-                        tex.SetPixel(i, j, new Color(currentHeight + heightToAdd, 0, 0, 0));
-
-                        i--;
-                    }
-
-                    i = middlePix;
-                    
-                    // go to the right until we are out of range
-                    while (i < textureSize.x)
-                    {
-                        Vector3 pixelPos = TorusUtility.UVToCoord(
-                            new Vector2(i, j) / textureSize,
-                            parameter, parameter);
-
-                        float distance = Vector3.Distance(vertPos, pixelPos);
-                        if (distance >= sphereRadius)
-                            break;
-
-                        float dot = Vector3.Dot(grads[vert], pixelPos - vertPos);
-                        float heightToAdd = Mathf.SmoothStep(dot, 0, distance / sphereRadius);
-                        
-                        float currentHeight = tex.GetPixel(i, j).r;
-                        tex.SetPixel(i, j, new Color(currentHeight + heightToAdd, 0, 0, 0));
-
-                        i++;
-                    }
-                }
+            int total = 0;
+            for (int i = 0; i < cols.Length; i++)
+            {
+                structure[i * 2] = cols[i];
+                structure[i * 2 + 1] = total;
+                total += cols[i];
             }
+
+            return structure;
         }
 
         private Vector3[] GenerateGradients(int[] cols)

@@ -1,0 +1,68 @@
+﻿#pragma kernel TorusNoise
+
+#define TAU 6.2831853071
+
+// dimensions must be multiple of 16 (verified CPU side)
+RWTexture2D<float4> noiseTexture;
+uint2 texDims;
+float uvRowSeparation;
+
+// includes wrapped row (in case it is not seamless)
+// (columns in row, cumulative grads before row)
+StructuredBuffer<uint2> gradientStructure;
+StructuredBuffer<float3> gradients;
+uint gradRows;
+
+float torusParameter;
+float sphereRadius;
+
+float3 TorusToPos(const float2 angles)
+{
+    const float radProj = torusParameter + cos(angles.y);
+    return float3(
+        radProj * cos(angles.x),
+        sin(angles.y),
+        radProj * sin(angles.x));
+}
+
+float FindContribution(const float3 pixelPos, const float3 grad, const float2 gradUV)
+{
+    const float3 gradPos = TorusToPos(gradUV * TAU);
+    const float3 offset = gradPos - pixelPos;
+    const float planeHeight = dot(offset, grad);
+    const float distance = clamp(length(offset), 0, sphereRadius);
+    const float smoothedHeight = smoothstep(0, 1, 1 - distance / sphereRadius) * planeHeight;
+    return smoothedHeight;
+}
+
+[numthreads(16, 16, 1)]
+void TorusNoise(uint3 dtid : SV_DispatchThreadID)
+{
+    const float2 uv = dtid.xy / float2(texDims);
+    const float3 pos = TorusToPos(uv * TAU);
+    
+    const uint vertSpace = clamp(uv.y / uvRowSeparation, 0, gradRows - 2);
+
+    // x = lower row , y = upper row
+    const uint2 rowGradNumber = uint2(gradientStructure[vertSpace].x, gradientStructure[vertSpace + 1].x);
+    const float2 colSpacing = float2(1, 1) / (rowGradNumber - uint2(1, 1));
+
+    const uint2 leftGradRowIndices = clamp(uv.xx / colSpacing, float2(0, 0), rowGradNumber - uint2(2, 2));
+    const uint2 leftGradIndices =
+        float2(gradientStructure[vertSpace].y, gradientStructure[vertSpace + 1].y)
+        + leftGradRowIndices;
+
+    const float2 rowVs = float2(vertSpace, vertSpace + 1) * uvRowSeparation;
+    const float2 leftUs = colSpacing * leftGradRowIndices;
+    
+    const float4 contributions = float4(
+        FindContribution(pos, gradients[leftGradIndices.x], float2(leftUs.x, rowVs.x)),
+        FindContribution(pos, gradients[leftGradIndices.x + 1], float2(leftUs.x + colSpacing.x, rowVs.x)),
+        FindContribution(pos, gradients[leftGradIndices.y], float2(leftUs.y, rowVs.y)),
+        FindContribution(pos, gradients[leftGradIndices.y + 1], float2(leftUs.y + colSpacing.y, rowVs.y)));
+
+    // this sums elements efficiently
+    const float height = dot(contributions, float4(1, 1, 1, 1));
+
+    noiseTexture[dtid.xy] = height;
+}
