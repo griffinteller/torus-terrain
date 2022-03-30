@@ -10,11 +10,13 @@ float uvRowSeparation;
 // includes wrapped row (in case it is not seamless)
 // (columns in row, cumulative grads before row)
 StructuredBuffer<uint2> gradientStructure;
-StructuredBuffer<float3> gradients;
 uint gradRows;
 
 float torusParameter;
 float sphereRadius;
+
+bool clearTexture;
+
 
 float3 TorusToPos(const float2 angles)
 {
@@ -35,6 +37,57 @@ float FindContribution(const float3 pixelPos, const float3 grad, const float2 gr
     return smoothedHeight;
 }
 
+// Rotation with angle (in radians) and axis
+float3x3 AngleAxis3x3(const float angle, const float3 axis)
+{
+    float c, s;
+    sincos(angle, s, c);
+
+    const float t = 1 - c;
+    const float x = axis.x;
+    const float y = axis.y;
+    const float z = axis.z;
+
+    return float3x3(
+        t * x * x + c,      t * x * y - s * z,  t * x * z + s * y,
+        t * x * y + s * z,  t * y * y + c,      t * y * z - s * x,
+        t * x * z - s * y,  t * y * z + s * x,  t * z * z + c
+    );
+}
+
+float3 GetGradient(uint2 colRow, const float2 uv) 
+{
+    const static int permutation[] = { 151, 160, 137, 91, 90, 15, 131, 13, 201, 95, 96, 53, 194, 233, 7, 225, 140, 36, 
+                          103, 30, 69, 142, 8, 99, 37, 240, 21, 10, 23, 190, 6, 148, 247, 120, 234, 75, 0, 
+                          26, 197, 62, 94, 252, 219, 203, 117, 35, 11, 32, 57, 177, 33, 88, 237, 149, 56, 
+                          87, 174, 20, 125, 136, 171, 168, 68, 175, 74, 165, 71, 134, 139, 48, 27, 166, 
+                          77, 146, 158, 231, 83, 111, 229, 122, 60, 211, 133, 230, 220, 105, 92, 41, 55, 
+                          46, 245, 40, 244, 102, 143, 54, 65, 25, 63, 161, 1, 216, 80, 73, 209, 76, 132, 
+                          187, 208, 89, 18, 169, 200, 196, 135, 130, 116, 188, 159, 86, 164, 100, 109, 
+                          198, 173, 186, 3, 64, 52, 217, 226, 250, 124, 123, 5, 202, 38, 147, 118, 126, 
+                          255, 82, 85, 212, 207, 206, 59, 227, 47, 16, 58, 17, 182, 189, 28, 42, 223, 183, 
+                          170, 213, 119, 248, 152, 2, 44, 154, 163, 70, 221, 153, 101, 155, 167, 43, 
+                          172, 9, 129, 22, 39, 253, 19, 98, 108, 110, 79, 113, 224, 232, 178, 185, 112, 
+                          104, 218, 246, 97, 228, 251, 34, 242, 193, 238, 210, 144, 12, 191, 179, 162, 
+                          241, 81, 51, 145, 235, 249, 14, 239, 107, 49, 192, 214, 31, 181, 199, 106, 
+                          157, 184, 84, 204, 176, 115, 121, 50, 45, 127, 4, 150, 254, 138, 236, 205, 
+                          93, 222, 114, 67, 29, 24, 72, 243, 141, 128, 195, 78, 66, 215, 61, 156, 180 };
+    
+    colRow.x %= gradientStructure[colRow.y].x - 1;
+    colRow.y %= gradRows - 1;
+
+    const uint index = gradientStructure[colRow.y].y + colRow.x;
+    const float angle = permutation[index % 256] / float(256) * TAU;
+
+    const float2 vertexAngles = uv * TAU;
+    const float3 normal = float3(
+        cos(vertexAngles.y) * cos(vertexAngles.x),
+        sin(vertexAngles.y),
+        cos(vertexAngles.y) * sin(vertexAngles.x));
+    const float3 tangent = float3(-sin(vertexAngles.x), 0, cos(vertexAngles.x));
+    return mul(AngleAxis3x3(angle, normal), tangent);
+}
+
 [numthreads(16, 16, 1)]
 void TorusNoise(uint3 dtid : SV_DispatchThreadID)
 {
@@ -48,21 +101,36 @@ void TorusNoise(uint3 dtid : SV_DispatchThreadID)
     const float2 colSpacing = float2(1, 1) / (rowGradNumber - uint2(1, 1));
 
     const uint2 leftGradRowIndices = clamp(uv.xx / colSpacing, float2(0, 0), rowGradNumber - uint2(2, 2));
-    const uint2 leftGradIndices =
-        float2(gradientStructure[vertSpace].y, gradientStructure[vertSpace + 1].y)
-        + leftGradRowIndices;
+    //const uint2 leftGradIndices =
+        //float2(gradientStructure[vertSpace].y, gradientStructure[vertSpace + 1].y)
+        //+ leftGradRowIndices;
 
     const float2 rowVs = float2(vertSpace, vertSpace + 1) * uvRowSeparation;
     const float2 leftUs = colSpacing * leftGradRowIndices;
+
+    const float2 gradLLuv = float2(leftUs.x, rowVs.x);
+    const float2 gradLRuv = float2(leftUs.x + colSpacing.x, rowVs.x);
+    const float2 gradULuv = float2(leftUs.y, rowVs.y);
+    const float2 gradURuv = float2(leftUs.y + colSpacing.y, rowVs.y);
+
+    const float3 gradLL = GetGradient(uint2(leftGradRowIndices.x, vertSpace), gradLLuv);
+    const float3 gradLR = GetGradient(uint2(leftGradRowIndices.x + 1, vertSpace), gradLRuv);
+    const float3 gradUL = GetGradient(uint2(leftGradRowIndices.y, vertSpace + 1), gradULuv);
+    const float3 gradUR = GetGradient(uint2(leftGradRowIndices.y + 1, vertSpace + 1), gradURuv);
     
     const float4 contributions = float4(
-        FindContribution(pos, gradients[leftGradIndices.x], float2(leftUs.x, rowVs.x)),
-        FindContribution(pos, gradients[leftGradIndices.x + 1], float2(leftUs.x + colSpacing.x, rowVs.x)),
-        FindContribution(pos, gradients[leftGradIndices.y], float2(leftUs.y, rowVs.y)),
-        FindContribution(pos, gradients[leftGradIndices.y + 1], float2(leftUs.y + colSpacing.y, rowVs.y)));
-
+        FindContribution(pos, gradLL, gradLLuv),
+        FindContribution(pos, gradLR, gradLRuv),
+        FindContribution(pos, gradUL, gradULuv),
+        FindContribution(pos, gradUR, gradURuv));
+    
     // this sums elements efficiently
-    const float height = dot(contributions, float4(1, 1, 1, 1));
+    float height = dot(contributions, float4(1, 1, 1, 1));
+
+    if (!clearTexture)
+    {
+        height += noiseTexture[dtid.xy].x;
+    }
 
     noiseTexture[dtid.xy] = height;
 }
