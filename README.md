@@ -11,9 +11,9 @@ Fractal gradient noise on a torus.
 
 ### Approach
 
-Adapting gradient noise approaches like Perlin noise and Simplex noise for manifolds with varying curvature is non-trivial, in particular due to their reliance on connectivity information between gradient sample points. While reasonably uniform triangulations of a torus exist, I found the results of applying Simplex noise to these triangulations visually unappealing. This implementation generates gradient noise independently for each sample point.
+Generating gradient noise on manifolds with varying curvature seems like it should be as simple as finding a reasonable simplical complex and running simplex noise. I found the results of that approach visually distressing. This implementation takes a different approach, by doing away with connectivity information all together, and generating gradient noise per point instead of per simplex.
 
-For a particular layer of noise, $n$ uniformly spaced points $\\{p_i\\}$ around the torus are chosen, each mapping to a uniformly random unit gradient, $g_i \in \mathbb R^2$. Each point $p_i$ contributes the plane lying on $p_i$ with gradient $g_i$, but with influence that falls off smoothly towards 0. In particular, each point has a "radius of influence" $r$ equal to the mean distance between closest points. More specifically, the contribution to the surface for each point $f_i : \mathbb R^3 \to \mathbb R$ is given by
+For a particular layer of noise, $n$ uniformly spaced points $\\{p_i \in R^3\\}$ around the torus are chosen, each mapping to a uniformly random unit gradient, $g_i \in \mathbb R^2$. Each point $p_i$ contributes the plane lying on $p_i$ with gradient $g_i$, but with influence that falls off smoothly towards 0. In particular, each point has a "radius of influence" $r$ equal to the mean distance between closest points. More specifically, the contribution to the surface for each point $f_i : \mathbb R^3 \to \mathbb R$ is given by
 ```math
   f_i(p) = g_i^T(p - p_i) \cdot \text{smootherstep}(0, 1, 1-\frac{\|p - p_i\|}{r})
 ```
